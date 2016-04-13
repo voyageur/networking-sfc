@@ -39,7 +39,7 @@ def upgrade():
         sa.Column('mac_address', sa.String(length=32), nullable=False),
         sa.Column('network_type', sa.String(length=8), nullable=True),
         sa.Column('segment_id', sa.Integer(), nullable=True),
-        sa.Column('local_endpoint', sa.String(length=64), nullable=False),
+                    sa.Column('local_endpoint', sa.String(length=64), nullable=True),
         sa.PrimaryKeyConstraint('id')
     )
 
