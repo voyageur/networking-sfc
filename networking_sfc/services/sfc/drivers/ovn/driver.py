@@ -79,20 +79,24 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                                              subnet)
 
     def _get_port_subnet_gw_info(self, core_plugin, subnet):
-        filters = dict(fixed_ips=dict(subnet_id=[subnet["id"]]),
+        if (subnet != None):
+            filters = dict(fixed_ips=dict(subnet_id=[subnet["id"]]),
                        tenant_id=[subnet['tenant_id']])
-        gw_ports = core_plugin.get_ports(self.admin_context, filters=filters)
-        if gw_ports is not None:
-            for gw_port in gw_ports:
-                if gw_port['device_owner'] in nc_const.ROUTER_INTERFACE_OWNERS:
-                    return (gw_port['mac_address'],
+            gw_ports = core_plugin.get_ports(self.admin_context, filters=filters)
+            if gw_ports is not None:
+                for gw_port in gw_ports:
+                    if gw_port['device_owner'] in nc_const.ROUTER_INTERFACE_OWNERS:
+                        return (gw_port['mac_address'],
                             subnet['cidr'],
                             subnet['network_id'])
-        raise exc.SfcNoSubnetGateway(
-            type='subnet gateway',
-            cidr=subnet['cidr'])
+            raise exc.SfcNoSubnetGateway(
+                type='subnet gateway',
+                cidr=subnet['cidr'])
+        else:
+            return None,None,None
 
     def _get_subnet_by_port(self, core_plugin, id):
+        subnet = None
         port = core_plugin.get_port(self.admin_context, id)
         for ip in port['fixed_ips']:
             subnet = core_plugin.get_subnet(self.admin_context,
@@ -468,12 +472,14 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             detail['mac_address'] = port_detail['mac_address']
             detail['segment_id'] = port_detail['segment_id']
             detail['network_type'] = port_detail['network_type']
+            """
             mac, cidr, net_uuid = self._get_port_subnet_gw_info_by_port_id(
                 port_detail['ingress']
             )
             detail['gw_mac'] = mac
             detail['cidr'] = cidr
             detail['net_uuid'] = net_uuid
+            """
             node_next_hops.append(detail)
         flow_rule['next_hops'] = node_next_hops
         flow_rule.pop('next_hop')
@@ -607,11 +613,24 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         LOG.debug("Context: %s" % context)
         LOG.debug("Path Nodes: %s" % path_nodes)
         LOG.debug("port chain %s" % port_chain)
+        LOG.debug("ID is %s" % port_chain['id'])
+        LOG.debug("Name is %s" % port_chain['name'])
         for port_item in port_chain['port_pair_groups']:
             port_pair_id =  self._get_portpair_ids(context,port_item)
             LOG.debug("Port Pair Id: %s " % port_pair_id)
-            LOG.debug("Port Pair Info: %s" % self._get_port_pair_detail(context, port_pair_id))
-        LOG.debug("FLOW CLASSIFIER %s" % self._get_portchain_fcs(port_chain))
+            port_pair_detail = self._get_port_pair_detail(context, port_pair_id)
+            LOG.debug("Port Pair Info: %s" % port_pair_detail)
+            LOG.debug("Ingress port id: %s " % port_pair_detail['ingress'])
+            LOG.debug("Egress port id: %s " % port_pair_detail['egress'])
+        fcs = self._get_portchain_fcs(port_chain)
+        LOG.debug("FLOW CLASSIFIER %s" % fcs[0])
+        app_port =  fcs[0]['logical_source_port']
+        LOG.debug("App Port ID %s" % app_port)
+        core_plugin = manager.NeutronManager.get_plugin()
+        port = core_plugin.get_port(self.admin_context, app_port)
+        LOG.debug("App port Info %s " % port)
+        LOG.debug("Network ID %s " % port['network_id'])
+        
         #
         # Get logical port (application port) and network-id
         # Get port-pair for firewall and associated network-id
