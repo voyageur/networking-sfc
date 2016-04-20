@@ -25,6 +25,7 @@ from neutron import manager
 from neutron.i18n import _LE
 from neutron.i18n import _LW
 
+from neutron.agent.ovsdb.native import idlutils
 from neutron.plugins.common import constants as np_const
 
 from oslo_log import helpers as log_helpers
@@ -40,12 +41,18 @@ from networking_sfc.services.sfc.drivers.ovs import(
 from networking_sfc.services.sfc.drivers.ovs import (
     constants as ovs_const)
 
+from networking_ovn.common import config
+from networking_ovn.common import constants as ovn_const
+from networking_ovn.common import utils
+from networking_ovn.ovsdb import impl_idl_ovn
+from networking_ovn.plugin import OVNPlugin
 
 LOG = logging.getLogger(__name__)
 
 
 class OVNSfcDriver(driver_base.SfcDriverBase,
-                   ovs_sfc_db.OVSSfcDriverDB):
+                   ovs_sfc_db.OVSSfcDriverDB,
+                   OVNPlugin):
     """Sfc Driver Base Class."""
 
     def initialize(self):
@@ -604,17 +611,25 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
 
     @log_helpers.log_method_call
     def create_port_chain(self, context):
+        ovn_dict = {}
         port_chain = context.current
         path_nodes = self._create_portchain_path(context, port_chain)
-
-        # notify agent with async thread
-        # current we don't use greenthread.spawn
-        # TODO Insert OVN service insertion function
+        #
+        # Create OVN dict
+        #
         LOG.debug("Context: %s" % context)
         LOG.debug("Path Nodes: %s" % path_nodes)
         LOG.debug("port chain %s" % port_chain)
         LOG.debug("ID is %s" % port_chain['id'])
         LOG.debug("Name is %s" % port_chain['name'])
+        #
+        # Use the port chain id/name as the identifiers in OVN
+        #
+        ovn_dict['id'] = port_chain['id']
+        ovn_dict['name'] = port_chain['name']
+        #
+        # Loop over port-pair group gettting individual port-pairs for VNF
+        #
         for port_item in port_chain['port_pair_groups']:
             port_pair_id =  self._get_portpair_ids(context,port_item)
             LOG.debug("Port Pair Id: %s " % port_pair_id)
@@ -622,31 +637,59 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             LOG.debug("Port Pair Info: %s" % port_pair_detail)
             LOG.debug("Ingress port id: %s " % port_pair_detail['ingress'])
             LOG.debug("Egress port id: %s " % port_pair_detail['egress'])
+            #
+            # TODO JED 
+            # This assumes only one port-pair if their are a 
+            # sequence of VNFs need to address or generate error
+            #
+            ovn_dict['in_port_id'] = port_pair_detail['ingress']
+            ovn_dict['out_port_id'] = port_pair_detail['egress']
+        #
+        # Get flow classifier
+        #
+        # TODO:
+        # Convert classification rules into OVN ACL Rules
+        # Still need the destination port id to drive the OVN rules
+        #
         fcs = self._get_portchain_fcs(port_chain)
         LOG.debug("FLOW CLASSIFIER %s" % fcs[0])
         app_port =  fcs[0]['logical_source_port']
         LOG.debug("App Port ID %s" % app_port)
+        #
+        # TODO - specific destination port
+        #
+        ovn_dict['app_port_id'] = fcs[0]['logical_source_port']
+        #
+        # Get the network id from the application port
+        #
+        # TODO: In cases where the VNF and Application are on seperate
+        #       networks need to change logic - at minimum add an error
+        #       handler that limits VNFs and Applications to same core.
+        #
         core_plugin = manager.NeutronManager.get_plugin()
         port = core_plugin.get_port(self.admin_context, app_port)
         LOG.debug("App port Info %s " % port)
         LOG.debug("Network ID %s " % port['network_id'])
-        
+        ovn_dict['network_id'] = port['network_id']
         #
-        # Get logical port (application port) and network-id
-        # Get port-pair for firewall and associated network-id
-        # Compose OVN Service and invoke OVN Interfacer
+        # Create a new set of rules in OVN to insert VNF
         #
-        """
-        self._thread_update_path_nodes(
-            path_nodes,
-            port_chain['flow_classifiers'],
-            None)
-        """
+        LOG.debug("Create OVN Rules for VNF: %s " % ovn_dict)
+        status = self._create_ovn_vnf(context, ovn_dict)
+        if (status == False):
+            LOG.error("Could not create port_chain in ovn %s: " % ovn_dict)
+
+       
     @log_helpers.log_method_call
     def delete_port_chain(self, context):
         port_chain = context.current
         portchain_id = port_chain['id']
         LOG.debug("to delete portchain path")
+        #
+        # Delete OVN entries
+        status = self._delete_ovn_vnf(context,port_chain)
+        if (status == False):
+            LOG.error("Failed to delete portchain id: %s" % portchain_id)
         self._delete_portchain_path(context, portchain_id)
 
     def _get_diff_set(self, orig, cur):
@@ -1142,3 +1185,57 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         # update next hop info
         self._update_path_node_next_hops(flow_rule)
         return flow_rule
+    #
+    # Interface into OVN - adds new rules to direct
+    # traffic to VNF port-pair
+    #
+    def _create_ovn_vnf(self, context, ovn_info):
+        #
+        # Check network exists
+        #
+        status = False
+        lswitch_name = utils.ovn_name(ovn_info['network_id'])
+        try:
+            lswitch = idlutils.row_by_value(self._ovn.idl, 'Logical_Switch',
+                                            'name', lswitch_name)
+        except idlutils.RowNotFound:
+            msg = _("Logical Switch %s does not exist") % lswitch_name
+            LOG.error(msg)
+            raise RuntimeError(msg)
+
+        with self._ovn.transaction(check_error=True) as txn:
+            txn.add(self._ovn.create_lservice(
+                    lservice_name = 'sfi-%s' % ovn_info['id'],
+                    lswitch_name = lswitch_name,
+                    name = ovn_info['name'],
+                    app_port = ovn_info['app_port_id'],
+                    in_port = ovn_info['in_port_id'],
+                    out_port = ovn_info['out_port_id'] ))
+            status = True
+        return status
+    #
+    # Interface to delete entry in OVN nb-db for VNF port-pair
+    #
+    def _delete_ovn_vnf(self,context, port_chain):
+        status = False
+        LOG.debug("delete ovn vnf %s" % port_chain)
+        #
+        # Get Network id of application port
+        #
+        fcs = self._get_portchain_fcs(port_chain)
+        app_port =  fcs[0]['logical_source_port']
+        #
+        # Get the network id from the application port
+        #
+        # TODO: In cases where the VNF and Application are on seperate
+        #       networks need to change logic - at minimum add an error
+        #       handler that limits VNFs and Applications to same core.
+        #
+        core_plugin = manager.NeutronManager.get_plugin()
+        port = core_plugin.get_port(self.admin_context, app_port)
+        network_id = port['network_id']
+        portchain_id = port_chain['id']
+        with self._ovn.transaction(check_error=True) as txn:
+            txn.add(self._ovn.delete_lservice(portchain_id,network_id))
+            status = True
+        return status
