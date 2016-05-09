@@ -28,8 +28,8 @@ from neutron.common import constants as const
 from neutron.db import common_db_mixin
 from neutron.db import model_base
 from neutron.db import models_v2
-from neutron.i18n import _LI
 
+from networking_sfc._i18n import _LI
 from networking_sfc.extensions import flowclassifier as fc_ext
 
 LOG = logging.getLogger(__name__)
@@ -210,7 +210,7 @@ class FlowClassifierDbPlugin(fc_ext.FlowClassifierPluginBase,
     @log_helpers.log_method_call
     def create_flow_classifier(self, context, flow_classifier):
         fc = flow_classifier['flow_classifier']
-        tenant_id = self._get_tenant_id_for_create(context, fc)
+        tenant_id = fc['tenant_id']
         l7_parameters = {
             key: L7Parameter(key, val)
             for key, val in six.iteritems(fc['l7_parameters'])}
