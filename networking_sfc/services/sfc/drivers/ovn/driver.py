@@ -44,7 +44,7 @@ from networking_sfc.services.sfc.drivers.ovs import (
 ##from networking_ovn.common import config
 #from networking_ovn.common import constants as ovn_const
 #from networking_ovn.common import utils
-from networking_ovn.ml2 import mech_driver
+from networking_ovn.ovsdb import impl_idl_ovn
 
 LOG = logging.getLogger(__name__)
 
@@ -678,7 +678,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         #
         # TODO Call OVN and pass in sfc dict struct
         #
-        #status = create_ovn_sfc(ovn_dict)
+        status = self._create_ovn_sfc(ovn_dict)
         if (status == False):
             LOG.error("Could not create port_chain in ovn %s: " % ovn_dict)
 
@@ -691,7 +691,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         LOG.debug("to delete portchain path")
         #
         # Delete OVN entries
-        #status = self._delete_ovn_vnf(context,port_chain)
+        status = self._delete_ovn_vnf(port_chain)
         if (status == False):
             LOG.error("Failed to delete portchain id: %s" % portchain_id)
         self._delete_portchain_path(context, portchain_id)
@@ -1189,4 +1189,125 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         # update next hop info
         self._update_path_node_next_hops(flow_rule)
         return flow_rule
+    #
+    # Networking OVN Interface
+    #
+    @property
+    def _ovn(self):
+        if self._ovn_property is None:
+            LOG.info(_LI("Getting OvsdbOvnIdl"))
+            self._ovn_property = impl_idl_ovn.OvsdbOvnIdl(self)
+        return self._ovn_property
+      #
+    # Interface into OVN - adds new rules to direct
+    # traffic to VNF port-pair
+    #
+    def _sfc_name(self,id):
+        # The name of the OVN entry will be neutron-sfc-<UUID>
+        # This is due to the fact that the OVN application checks if the name
+        # is a UUID. If so then there will be no matches.
+        # We prefix the UUID to enable us to use the Neutron UUID when
+        # updating, deleting etc.
+        return 'neutron-sfc-%s' % id
+        #
+        # Check logical switch exists for network port
+        #
+    def check_lswitch_exists(self, context, port_id):
+        status = True
+        core_plugin = manager.NeutronManager.get_plugin()
+        #
+        # Get network id belonging to port
+        #
+        port = core_plugin.get_port(context,port_id)
+        #
+        # Check network exists
+        #
+        lswitch_name = utils.ovn_name(port['network_id'])
+        try:
+            lswitch = idlutils.row_by_value(self._ovn.idl, 'Logical_Switch',
+                                            'name', lswitch_name)
+        except idlutils.RowNotFound:
+            msg = _("Logical Switch %s does not exist got port_id %s") % (lswitch_name, port_id)
+            LOG.error(msg)
+            #raise RuntimeError(msg)
+            status = False
+        return status
+    def _create_ovn_sfc(self, sfc_instance):
+        status = True
 
+        with self._ovn.transaction(check_error=True) as txn:
+            #
+            # Create Port Chain in OVN
+            #
+            lport_chain_name = self._sfc_name(sfc_instance['id'])
+            txn.add(self._ovn.create_lport_chain(
+                lport_chain_name = lport_chain_name ))
+            #
+            # Insert Flow Classifier into OVN
+            # 
+            flow_classifier = sfc_instance['flow_classifier']
+            port_pair_groups = sfc_instance['port_pair_groups']
+            flow_classifier_name = self._sfc_name(flow_classifier['id'])
+            txn.add(self._ovn.create_lflow_classifier(
+                lflow_classifier_name = lflow_classifier_name,
+                lswitch_name = lswitch_name,
+                logical_source_port = flow_classifier['logical_source_port'] ))
+            #
+            # TODO: Create individual setters for valid parameters
+            #
+            #            logical_source_port = flow_classifier['logical_source_port'],
+            #            source_port_range_min = flow_classifier['source_port_range_min'], 
+            #            destination_ip_prefix = flow_classifier['destination_ip_prefix'],
+            #            protocol= flow_classifier['protocol'],
+            #            source_port_range_max = flow_classifier['source_port_range_max'], 
+            #            ethertype = flow_classifier['ethertype'], 
+            #            source_ip_prefix = flow_classifier['source_ip_prefix'], 
+            #            destination_port_range_min = flow_classifier['destination_port_range_min'],
+            #            destination_port_range_max =flow_classifier['destination_port_range_max']
+            # 
+            # Create Port Pair Group
+            #
+            txn.add(self._ovn.set_lport_chain(
+                    lport_chain_name = lport_chain_name,
+                    lflow_classifier_name = lflow_classifier_name ))
+            port_pairs_groups = []
+            for group in port_pair_groups:
+                port_pairs = group['port_pairs']
+                lport_group_name = self._sfc_name(group['id'])
+                txn.add(self._ovn.create_lport_port_group(
+                        lport_pair_group_name = lport_pair_group_name,
+                        lport_chain_name = lport_chain_name
+                        ))
+                port_pair_group = []
+                #
+                # Insert Ports Pair into OVN
+                #
+                for port_pair in port_pairs:
+                    lport_pair_name = self._sfc_name(port_pair['id'])
+                    txn.add(self._ovn.create_lport_pair(
+                            lport_pair_name = lport_pair_name,
+                            lswitch_name = lswitch_name,
+                            outport = port_pair['egress'],
+                        inport = port_pair['ingress']
+                            ))
+                    txn.add(self._ovn.set_lport_pair_group(
+                            lport_pair_group_name = lport_pair_group_name,
+                            lport_pair_name = lport_pair_name
+                            ))
+                #
+                # Insert Port Pair Group into OVN
+                #
+                txn.add(self._ovn.set_lport_chain(
+                        lport_chain_name = lport_chain_name,
+                        lport_pair_group_name = lport_pair_group_name
+                    ))
+        return status
+    #
+    # Interface to delete entry in OVN nb-db for VNF port-pair
+    #
+    def _delete_ovn_sfc(self,port_chain):
+        status = False
+        LOG.debug("delete ovn vnf %s" % port_chain)
+        # TODO Figure out delete semantics and implement
+        #
+        return status
