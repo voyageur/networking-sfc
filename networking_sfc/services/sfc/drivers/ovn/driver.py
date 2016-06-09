@@ -15,6 +15,7 @@
 import netaddr
 
 # from eventlet import greenthread
+import six
 
 from neutron.common import constants as nc_const
 from neutron.common import rpc as n_rpc
@@ -24,6 +25,7 @@ from neutron import manager
 
 from neutron.i18n import _LE
 from neutron.i18n import _LW
+
 
 from neutron.agent.ovsdb.native import idlutils
 from neutron.plugins.common import constants as np_const
@@ -45,6 +47,7 @@ from networking_sfc.services.sfc.drivers.ovs import (
 #from networking_ovn.common import constants as ovn_const
 #from networking_ovn.common import utils
 from networking_ovn.ovsdb import impl_idl_ovn
+from networking_ovn._i18n import _, _LI
 
 LOG = logging.getLogger(__name__)
 
@@ -55,7 +58,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
 
     def initialize(self):
         super(OVNSfcDriver, self).initialize()
-
+        self._ovn_property = None
         self.id_pool = ovs_sfc_db.IDAllocation(self.admin_context)
 
 
@@ -608,41 +611,37 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         return flow_classifiers
 
     @log_helpers.log_method_call
-    def create_port_chain(self, context,port_chain):
+    def create_port_chain(self, context):
         ovn_dict = {}
         port_chain = context.current
-        path_nodes = self._create_portchain_path(context, port_chain)
-        #
-        # Create OVN dict
-        #
-        LOG.debug("Context: %s" % context)
-        LOG.debug("Path Nodes: %s" % path_nodes)
-        LOG.debug("port chain %s" % port_chain)
-
-        LOG.debug("ID is %s" % port_chain['id'])
-        LOG.debug("Name is %s" % port_chain['name'])
-        #
-        # Use the port chain id/name as the identifiers in OVN
-        #
-        ovn_dict['id'] = port_chain['id']
-        ovn_dict['name'] = port_chain['name']
+        LOG.debug("Port Chain (create_port_chain): %s " % port_chain)
+        ovn_dict = {
+            'id': port_chain['id'],
+            'name': port_chain['name'],
+            'tenant_id': port_chain['tenant_id'],
+            'description': port_chain['description'],
+            'port_pair_groups': port_chain['port_pair_groups']
+        }
         #
         # Loop over port-pair group gettting individual port-pairs for VNF
         #
-        for port_item in port_chain['port_pair_groups']:
-            port_pair_id =  self._get_portpair_ids(context,port_item)
-            LOG.debug("Port Pair Id: %s " % port_pair_id)
-            port_pair_detail = self._get_port_pair_detail(context, port_pair_id)
-            LOG.debug("Port Pair Info: %s" % port_pair_detail)
-            LOG.debug("Ingress port id: %s " % port_pair_detail['ingress'])
-            LOG.debug("Egress port id: %s " % port_pair_detail['egress'])
-            #
-            # TODO JED 
-            # This assumes only one port-pair if their are a 
-            # sequence of VNFs need to address or generate error
-            #
-            ovn_dict['in_port_id'] = port_pair_detail['ingress']
-            ovn_dict['out_port_id'] = port_pair_detail['egress']
+        port_pair_group_list = []
+        for port_group_item in port_chain['port_pair_groups']:
+            port_pair_list = [] 
+            port_pair_group = {}
+            port_pair_id =  self._get_portpair_ids(context,port_group_item)
+            for port_pair_item in port_pair_id:
+                LOG.debug("Port Pair Id: %s " % port_pair_id)
+                port_pair_detail = self._get_port_pair_detail(context, port_pair_item)
+                port_pair_list.append(port_pair_detail)
+                LOG.debug("Port Pair Info: %s" % port_pair_detail)
+                LOG.debug("Ingress port id: %s " % port_pair_detail['ingress'])
+                LOG.debug("Egress port id: %s " % port_pair_detail['egress'])
+            port_pair_group["port_pairs"] = port_pair_list
+            port_pair_group["id"] = port_group_item
+            port_pair_group_list.append(port_pair_group)
+            LOG.debug("Port Pair Group (create_port_chain): %s" % port_pair_group_list)
+        ovn_dict['port_pair_groups'] = port_pair_group_list
         #
         # Get flow classifier
         #
@@ -650,35 +649,15 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         # Convert classification rules into OVN ACL Rules
         # Still need the destination port id to drive the OVN rules
         #
-        fcs = self._get_portchain_fcs(port_chain)
-        LOG.debug("FLOW CLASSIFIER %s" % fcs[0])
-        app_port =  fcs[0]['logical_source_port']
-        LOG.debug("App Port ID %s" % app_port)
-        #
-        # TODO - specific destination port
-        #
-        ovn_dict['app_port_id'] = fcs[0]['logical_source_port']
-        #
-        # Get the network id from the application port
-        #
-        # TODO: In cases where the VNF and Application are on seperate
-        #       networks need to change logic - at minimum add an error
-        #       handler that limits VNFs and Applications to same core.
-        #
-        core_plugin = manager.NeutronManager.get_plugin()
-        port = core_plugin.get_port(self.admin_context, app_port)
-        LOG.debug("App port Info %s " % port)
-        LOG.debug("Network ID %s " % port['network_id'])
-        ovn_dict['network_id'] = port['network_id']
+        ovn_dict['flow_classifier'] = self._get_portchain_fcs(port_chain)
         #
         # Create a new set of rules in OVN to insert VNF
         #
-        LOG.debug("Create OVN Rules for VNF: %s " % ovn_dict)
-        
+        LOG.debug("Port Chain Definition: %s " % ovn_dict)
         #
         # TODO Call OVN and pass in sfc dict struct
         #
-        status = self._create_ovn_sfc(ovn_dict)
+        status = self._create_ovn_sfc(context,ovn_dict)
         if (status == False):
             LOG.error("Could not create port_chain in ovn %s: " % ovn_dict)
 
@@ -691,7 +670,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         LOG.debug("to delete portchain path")
         #
         # Delete OVN entries
-        status = self._delete_ovn_vnf(port_chain)
+        status = self._delete_ovn_sfc(port_chain)
         if (status == False):
             LOG.error("Failed to delete portchain id: %s" % portchain_id)
         self._delete_portchain_path(context, portchain_id)
@@ -1198,7 +1177,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             LOG.info(_LI("Getting OvsdbOvnIdl"))
             self._ovn_property = impl_idl_ovn.OvsdbOvnIdl(self)
         return self._ovn_property
-      #
+    #
     # Interface into OVN - adds new rules to direct
     # traffic to VNF port-pair
     #
@@ -1212,8 +1191,8 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         #
         # Check logical switch exists for network port
         #
-    def check_lswitch_exists(self, context, port_id):
-        status = True
+    def _check_lswitch_exists(self, context, port_id):
+        lswitch_name = None
         core_plugin = manager.NeutronManager.get_plugin()
         #
         # Get network id belonging to port
@@ -1230,9 +1209,10 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             msg = _("Logical Switch %s does not exist got port_id %s") % (lswitch_name, port_id)
             LOG.error(msg)
             #raise RuntimeError(msg)
-            status = False
-        return status
-    def _create_ovn_sfc(self, sfc_instance):
+            lswitch_name = None
+        return lswitch_name
+
+    def _create_ovn_sfc(self,context,sfc_instance):
         status = True
 
         with self._ovn.transaction(check_error=True) as txn:
@@ -1245,11 +1225,16 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             #
             # Insert Flow Classifier into OVN
             # 
-            flow_classifier = sfc_instance['flow_classifier']
+            flow_classifier = sfc_instance['flow_classifier'][0]
             port_pair_groups = sfc_instance['port_pair_groups']
             flow_classifier_name = self._sfc_name(flow_classifier['id'])
+            lswitch_name = self._check_lswitch_exists(context,flow_classifier['logical_source_port'])
+            if (lswitch_name == None):
+                LOG.error("Logical switch does not exist for flow_classifier logical source port: %s" %
+                          flow_classifier['logical_source_port'])
+                return
             txn.add(self._ovn.create_lflow_classifier(
-                lflow_classifier_name = lflow_classifier_name,
+                lflow_classifier_name = flow_classifier_name,
                 lswitch_name = lswitch_name,
                 logical_source_port = flow_classifier['logical_source_port'] ))
             #
@@ -1284,6 +1269,11 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                 #
                 for port_pair in port_pairs:
                     lport_pair_name = self._sfc_name(port_pair['id'])
+                    lswitch_name = self._check_lswitch_exists(context,port_pair['ingress'])
+                    if (lswitch_name == None):
+                        LOG.error("Logical switch does not exist for flow_classifier logical source port: %s" %
+                          flow_classifier['logical_source_port'])
+                        return
                     txn.add(self._ovn.create_lport_pair(
                             lport_pair_name = lport_pair_name,
                             lswitch_name = lswitch_name,

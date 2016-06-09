@@ -364,8 +364,13 @@ class SfcDbPlugin(
     @log_helpers.log_method_call
     def get_port_chain(self, context, id, fields=None):
         portchain = self._get_port_chain(context, id)
-        LOG.debug("\n\nGET DEEP Port Chain: %s" % self._make_deep_port_chain_dict(context,portchain))
         return self._make_port_chain_dict(portchain, fields)
+
+    @log_helpers.log_method_call
+    def get_deep_port_chain(self, context, id, fields=None):
+        portchain = self._get_port_chain(context, id)
+        LOG.debug("\n\nGet Deep Port Chain: %s" % self._make_deep_port_chain_dict(context,portchain))
+        return self._make_deep_port_chain_dict(portchain, fields)
 
     @log_helpers.log_method_call
     def _get_port_chain(self, context, id):
