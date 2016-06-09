@@ -45,7 +45,7 @@ from networking_sfc.services.sfc.drivers.ovs import (
 
 ##from networking_ovn.common import config
 #from networking_ovn.common import constants as ovn_const
-#from networking_ovn.common import utils
+from networking_ovn.common import utils
 from networking_ovn.ovsdb import impl_idl_ovn
 from networking_ovn._i18n import _, _LI
 
@@ -1197,7 +1197,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         #
         # Get network id belonging to port
         #
-        port = core_plugin.get_port(context,port_id)
+        port = core_plugin.get_port(self.admin_context,port_id)
         #
         # Check network exists
         #
@@ -1254,12 +1254,12 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             #
             txn.add(self._ovn.set_lport_chain(
                     lport_chain_name = lport_chain_name,
-                    lflow_classifier_name = lflow_classifier_name ))
+                    lflow_classifier_name = flow_classifier_name ))
             port_pairs_groups = []
             for group in port_pair_groups:
                 port_pairs = group['port_pairs']
-                lport_group_name = self._sfc_name(group['id'])
-                txn.add(self._ovn.create_lport_port_group(
+                lport_pair_group_name = self._sfc_name(group['id'])
+                txn.add(self._ovn.create_lport_pair_group(
                         lport_pair_group_name = lport_pair_group_name,
                         lport_chain_name = lport_chain_name
                         ))
