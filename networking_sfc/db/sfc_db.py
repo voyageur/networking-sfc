@@ -185,7 +185,7 @@ class SfcDbPlugin(
             ],
             'flow_classifiers': [
                 assoc['flowclassifier_id']
-                for assoc in port_chain['chain_classifier_associations'] 
+                for assoc in port_chain['chain_classifier_associations']
             ],
             'chain_parameters': {
                 param['keyword']: param['value']

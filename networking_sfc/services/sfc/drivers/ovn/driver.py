@@ -270,7 +270,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             lport_chain_name = self._sfc_name(sfc_instance['id'])
             txn.add(self._ovn.create_lport_chain(
                 lport_chain_name=lport_chain_name))
-            port_pair_groups = sfc_instance['port_pair_groups'] 
+            port_pair_groups = sfc_instance['port_pair_groups']
             for group in port_pair_groups:
                 lport_pair_group_name = self._sfc_name(group['id'])
                 port_pairs = group['port_pairs']
@@ -286,7 +286,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                         may_exist=False,
                         lport_chain_name=lport_chain_name,
                         port_pairs=port_pair_uuid_list))
-    
+
                 # Insert Port Pair Group and flow classifier into OVN
                 #
             fc_uuid = self._get_flow_classifier_uuid(flow_classifier_name)
@@ -364,8 +364,9 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                     outport_uuid = self._check_logical_port_exist(
                         port_pair['egress'])
                     if inport_uuid is None or outport_uuid is None:
-                        LOG.error("Logical ingress port or egress port does not"
-                                  " exist for port pair %s", port_pair['id'])
+                        LOG.error("Logical ingress port or egress port does "
+                                  "not exist for port pair %s",
+                                  port_pair['id'])
                         return False
                     txn.add(self._ovn.create_lport_pair(
                             lport_pair_name=lport_pair_name,
