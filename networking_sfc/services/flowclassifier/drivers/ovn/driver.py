@@ -52,5 +52,5 @@ class OVNFlowClassifierDriver(fc_driver.FlowClassifierDriverBase):
         logical_destination_port = flow_classifier['logical_destination_port']
         if logical_destination_port is None:
             raise exc.FlowClassifierBadRequest(message=(
-                'FlowClassifier %s does not set '
-                'logical destination port in ovn driver' % flow_classifier['id']))
+                'FlowClassifier %s does not set logical destination'
+                ' port in ovn driver' % flow_classifier['id']))

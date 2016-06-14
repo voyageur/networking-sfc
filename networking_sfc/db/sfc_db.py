@@ -185,8 +185,7 @@ class SfcDbPlugin(
             ],
             'flow_classifiers': [
                 assoc['flowclassifier_id']
-                for assoc in port_chain['chain_classifier_associations']
-                
+                for assoc in port_chain['chain_classifier_associations'] 
             ],
             'chain_parameters': {
                 param['keyword']: param['value']
@@ -195,41 +194,6 @@ class SfcDbPlugin(
         }
         return self._fields(res, fields)
 
-    @log_helpers.log_method_call
-    def _make_deep_port_chain_dict(self, context, port_chain, fields=None):
-        res = {
-            'id': port_chain['id'],
-            'name': port_chain['name'],
-            'tenant_id': port_chain['tenant_id'],
-            'description': port_chain['description'],
-            'port_pair_groups_id': [
-                assoc['portpairgroup_id']
-                for assoc in port_chain['chain_group_associations']
-            ],
-            'flow_classifiers_id': [
-                assoc['flowclassifier_id']
-                for assoc in port_chain['chain_classifier_associations']
-            ],
-            'chain_parameters': {
-                param['keyword']: param['value']
-                for k, param in six.iteritems(port_chain['chain_parameters'])
-            }
-        }
-        port_pair_group_list =[]
-        for item in res["port_pair_groups_id"]:
-            port_pairs_list=[]
-            port_pair_group = self.get_port_pair_group(context,item)
-            for pair in port_pair_group["port_pairs"]:
-                port_pairs_list.append(self.get_port_pair(context,pair))
-            port_pair_group['port_pairs'] = port_pairs_list
-            port_pair_group_list.append(port_pair_group)
-        res["port_pair_groups"] = port_pair_group_list
-        for item in res["flow_classifiers_id"]:
-            fc_instance = fc_db.FlowClassifierDbPlugin()
-            res["flow_classifier"] = fc_instance.get_flow_classifier(context,item)
-        LOG.debug("/n/n/Port Chain Dict: %s\n\n" % res)
-        return self._fields(res, fields)
-    
     def _validate_port_pair_groups(self, context, pg_ids, pc_id=None):
         with context.session.begin(subtransactions=True):
             for pg_id in pg_ids:
@@ -365,12 +329,6 @@ class SfcDbPlugin(
     def get_port_chain(self, context, id, fields=None):
         portchain = self._get_port_chain(context, id)
         return self._make_port_chain_dict(portchain, fields)
-
-    @log_helpers.log_method_call
-    def get_deep_port_chain(self, context, id, fields=None):
-        portchain = self._get_port_chain(context, id)
-        LOG.debug("\n\nGet Deep Port Chain: %s" % self._make_deep_port_chain_dict(context,portchain))
-        return self._make_deep_port_chain_dict(portchain, fields)
 
     @log_helpers.log_method_call
     def _get_port_chain(self, context, id):
