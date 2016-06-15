@@ -132,9 +132,13 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         if not status:
             LOG.error("Could not create port_chain in ovn %s: " % ovn_dict)
 
-        status = self._create_ovn_sfc(context, ovn_dict)
+        status = self._create_ovn_flow_classifier(context, ovn_dict)
         if not status:
-            LOG.error("Could not create port_chain in ovn %s: " % ovn_dict)
+            LOG.error("Could not create flow classifier in ovn %s: " % ovn_dict)
+
+        status = self._create_ovn_port_pair_group(context, ovn_dict)
+        if not status:
+            LOG.error("Could not create port pair group in ovn %s: " % ovn_dict)
 
     @log_helpers.log_method_call
     def delete_port_chain(self, context):
@@ -258,18 +262,11 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             # raise RuntimeError(msg)
         return fc_uuid
 
-    def _create_ovn_sfc(self, context, sfc_instance):
+    def _create_ovn_port_pair_group(self, context, sfc_instance):
         status = True
 
         with self._ovn.transaction(check_error=True) as txn:
-            flow_classifier = sfc_instance['flow_classifier'][0]
-            flow_classifier_name = self._sfc_name(flow_classifier['id'])
-            #
-            # Create Port Chain in OVN
-            #
             lport_chain_name = self._sfc_name(sfc_instance['id'])
-            txn.add(self._ovn.create_lport_chain(
-                lport_chain_name=lport_chain_name))
             port_pair_groups = sfc_instance['port_pair_groups']
             for group in port_pair_groups:
                 lport_pair_group_name = self._sfc_name(group['id'])
@@ -287,14 +284,25 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                         lport_chain_name=lport_chain_name,
                         port_pairs=port_pair_uuid_list))
 
-                # Insert Port Pair Group and flow classifier into OVN
-                #
-            fc_uuid = self._get_flow_classifier_uuid(flow_classifier_name)
-            if fc_uuid is None:
+        return status
+
+    def _create_ovn_flow_classifier(self, context, sfc_instance):
+        status = True
+
+        with self._ovn.transaction(check_error=True) as txn:
+            flow_classifier = sfc_instance['flow_classifier'][0]
+            flow_classifier_name = self._sfc_name(flow_classifier['id'])
+            lport_uuid = self._check_logical_port_exist(
+                flow_classifier['logical_source_port'])
+            if lport_uuid is None:
+                LOG.error("Logical port %s does not exist for flow_classifier",
+                          flow_classifier['logical_source_port'])
                 return False
-            txn.add(self._ovn.set_lport_chain(
-                    lport_chain_name=lport_chain_name,
-                    flow_classifier=fc_uuid))
+            lport_chain_name = self._sfc_name(sfc_instance['id'])
+            txn.add(self._ovn.create_lflow_classifier(
+                lport_chain_name=lport_chain_name,
+                lflow_classifier_name=flow_classifier_name,
+                logical_source_port=lport_uuid))
         return status
 
     def _create_ovn_sfc_about_logical_switch(self, context, sfc_instance):
@@ -304,9 +312,8 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             #
             # Insert Flow Classifier into OVN
             #
+            lport_chain_name = self._sfc_name(sfc_instance['id'])
             flow_classifier = sfc_instance['flow_classifier'][0]
-            port_pair_groups = sfc_instance['port_pair_groups']
-            flow_classifier_name = self._sfc_name(flow_classifier['id'])
             lswitch_name = self._check_lswitch_exists(
                 context, flow_classifier['logical_source_port'])
             if lswitch_name is None:
@@ -314,18 +321,9 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                           "logical source port: %s" %
                           flow_classifier['logical_source_port'])
                 return False
-            lport_uuid = self._check_logical_port_exist(
-                flow_classifier['logical_source_port'])
-            if lport_uuid is None:
-                LOG.error("Logical port %s does not exist for flow_classifier",
-                          flow_classifier['logical_source_port'])
-                return False
-            txn.add(self._ovn.create_lflow_classifier(
-                lflow_classifier_name=flow_classifier_name,
+            txn.add(self._ovn.create_lport_chain(
                 lswitch_name=lswitch_name,
-                may_exist=False,
-                logical_source_port=lport_uuid,
-                name=flow_classifier_name))
+                lport_chain_name=lport_chain_name))
             #
             # TODO(John): Create individual setters for valid parameters
             #
@@ -346,6 +344,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             # txn.add(self._ovn.set_lport_chain(
             #        lport_chain_name=lport_chain_name,
             #        flow_classifier=flow_classifier_name))
+            port_pair_groups = sfc_instance['port_pair_groups']
             for group in port_pair_groups:
                 port_pairs = group['port_pairs']
                 # Insert Ports Pair into OVN
