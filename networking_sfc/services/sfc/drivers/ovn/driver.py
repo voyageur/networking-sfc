@@ -152,8 +152,8 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         #
         # Delete OVN entries
         #
-        ovn_dict = self._create_ovn_dict(port_chain)
-        status = self._delete_ovn_sfc(ovn_dict)
+        ovn_dict = self._create_ovn_dict(context, port_chain)
+        status = self._delete_ovn_sfc(context, ovn_dict)
         if not status:
             LOG.error("Failed to delete portchain id: %s" % portchain_id)
 
@@ -363,6 +363,42 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
     #
     # Interface to delete entry in OVN nb-db for VNF port-pair
     #
-    def _delete_ovn_sfc(self, sfc_instance):
-        status = False
+    def _delete_ovn_sfc(self, context, sfc_instance):
+        status = True
+        lport_chain_name = self._sfc_name(sfc_instance['id'])
+        with self._ovn.transaction(check_error=True) as txn:
+            #
+            # delte port pair from logcial switch
+            #
+            port_pair_groups = sfc_instance['port_pair_groups']
+            for group in port_pair_groups:
+                port_pairs = group['port_pairs']
+                # Insert Ports Pair into OVN
+                #
+                for port_pair in port_pairs:
+                    lport_pair_name = self._sfc_name(port_pair['id'])
+                    lswitch_name = self._check_lswitch_exists(
+                        context, port_pair['ingress'])
+                    if lswitch_name is None:
+                        LOG.error("Logical switch does not exist for "
+                                  "flow_classifier logical source port: %s" %
+                                  flow_classifier['logical_source_port'])
+                        return False
+                    txn.add(self._ovn.delete_lport_pair(
+                            lport_pair_name=lport_pair_name,
+                            lswitch=lswitch_name))
+            #
+            # delete port chain from ovn
+            #
+            for flow_classifier in sfc_instance['flow_classifier']:
+                lswitch_name = self._check_lswitch_exists(
+                    context, flow_classifier['logical_source_port'])
+                if lswitch_name is None:
+                    LOG.error("Logical switch does not exist for "
+                              "flow_classifier logical source port: %s" %
+                              flow_classifier['logical_source_port'])
+                    return False
+                txn.add(self._ovn.delete_lport_chain(
+                    lswitch_name=lswitch_name,
+                    lport_chain_name=lport_chain_name))
         return status
