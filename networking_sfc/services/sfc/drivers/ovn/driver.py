@@ -156,10 +156,45 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         status = self._delete_ovn_sfc(context, ovn_dict)
         if not status:
             LOG.error("Failed to delete portchain id: %s" % portchain_id)
+        return status
 
     @log_helpers.log_method_call
     def update_port_chain(self, context):
-        pass
+        current = context.current
+        original = context.original
+        if (
+            current['flow_classifiers'] == original['flow_classifiers'] and
+            current['port_pair_groups'] == original['port_pair_groups']
+        ):
+            return True
+
+        if current['port_pair_groups'] != original['port_pair_groups']:
+            add_ppg = set(current['port_pair_groups']) - set(
+                original['port_pair_groups'])
+            delete_ppg = set(original['port_pair_groups']) - set(
+                current['port_pair_groups'])
+            status = self._update_ovn_port_pairs_for_port_groups(
+                context, add_ppg, delete_ppg)
+            if not status:
+                LOG.error("Failed to update portchain id: %s" % current['id'])
+                return False
+
+            status = self._update_ovn_port_pair_groups(
+                context, current['id'], add_ppg, delete_ppg)
+            if not status:
+                LOG.error("Failed to update portchain id: %s" % current['id'])
+                return False
+
+        if current['flow_classifiers'] != original['flow_classifiers']:
+            add_fc = set(current['flow_classifiers']) - set(
+                original['flow_classifiers'])
+            delete_fc = set(original['flow_classifiers']) - set(
+                current['flow_classifiers'])
+            status = self._update_ovn_flow_classifier(current['id'], add_fc,
+                                                      delete_fc)
+            if not status:
+                LOG.error("Failed to update portchain id: %s" % current['id'])
+                return False
 
     @log_helpers.log_method_call
     def create_port_pair_group(self, context):
@@ -172,7 +207,8 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
     def _update_ovn_port_pairs(self, context, port_pair_group_id, add, delete):
         # update port-pairs in ovn
         lport_pair_group_name = self._sfc_name(port_pair_group_id)
-        LOG.debug("Update ovn port pairs, add is %s, delete is %s",add, delete)
+        LOG.debug("Update ovn port pairs, add is %s, delete is %s",
+                  add, delete)
         with self._ovn.transaction(check_error=True) as txn:
             for pp in add:
                 port_pair = self._get_port_pair_detail(context, pp)
@@ -220,7 +256,115 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                     lswitch=lswitch_name,
                     lport_pair_group_name=lport_pair_group_name))
         return True
- 
+
+    def _update_ovn_port_pairs_for_port_groups(self, context, add, delete):
+        # update port-pairs in ovn
+        LOG.debug("Update ovn port pairs for port groups, add is %s, "
+                  "delete is %s", add, delete)
+        with self._ovn.transaction(check_error=True) as txn:
+            for ppg in delete:
+                ppg_detail = context._plugin.get_port_pair_group(
+                    context._plugin_context, ppg)
+                lport_pair_group_name = self._sfc_name(ppg_detail['id'])
+                for port_pair in ppg_detail['port_pairs']:
+                    port_pair_detail = self._get_port_pair_detail(
+                        context, port_pair)
+                    lport_pair_name = self._sfc_name(port_pair_detail['id'])
+                    lswitch_name = self._check_lswitch_exists(
+                        context, port_pair_detail['ingress'])
+                    if lswitch_name is None:
+                        LOG.error("Logical switch does not exist for "
+                                  "port pair %s ingress port" %
+                                  port_pair_detail['id'])
+                        return False
+                    txn.add(self._ovn.delete_lport_pair(
+                            lport_pair_name=lport_pair_name,
+                            lswitch=lswitch_name,
+                            lport_pair_group_name=lport_pair_group_name))
+            for ppg in add:
+                ppg_detail = context._plugin.get_port_pair_group(
+                    context._plugin_context, ppg)
+                lport_pair_group_name = self._sfc_name(ppg_detail['id'])
+                for port_pair in ppg_detail['port_pairs']:
+                    port_pair_detail = self._get_port_pair_detail(
+                        context, port_pair)
+                    lport_pair_name = self._sfc_name(port_pair_detail['id'])
+                    lswitch_name = self._check_lswitch_exists(
+                        context, port_pair_detail['ingress'])
+                    if lswitch_name is None:
+                        LOG.error("Logical switch does not exist for "
+                                  "port pair %s ingress port" %
+                                  port_pair_detail['id'])
+                        return False
+                    inport_uuid = self._check_logical_port_exist(
+                        port_pair_detail['ingress'])
+                    outport_uuid = self._check_logical_port_exist(
+                        port_pair_detail['egress'])
+                    if inport_uuid is None or outport_uuid is None:
+                        LOG.error("Logical ingress port or egress port does "
+                                  "not exist for port pair %s",
+                                  port_pair_detail['id'])
+                        return False
+                    txn.add(self._ovn.create_lport_pair(
+                            lport_pair_name=lport_pair_name,
+                            lswitch_name=lswitch_name,
+                            outport=outport_uuid,
+                            inport=inport_uuid))
+
+        return True
+
+    def _update_ovn_port_pair_groups(self, context, port_chain_id,
+                                     add, delete):
+        LOG.debug("Update ovn port pair groups, add is %s, delete is %s",
+                  add, delete)
+        lport_chain_name = self._sfc_name(port_chain_id)
+        with self._ovn.transaction(check_error=True) as txn:
+            for ppg in delete:
+                lport_pair_group_name = self._sfc_name(ppg)
+                txn.add(self._ovn.delete_lport_pair_group(
+                    lport_pair_group_name=lport_pair_group_name,
+                    lport_chain=lport_chain_name))
+
+            for ppg in add:
+                lport_pair_group_name = self._sfc_name(ppg)
+                ppg_detail = context._plugin.get_port_pair_group(
+                    context._plugin_context, ppg)
+                port_pair_uuid_list = []
+                for port_pair in ppg_detail['port_pairs']:
+                    lport_pair_name = self._sfc_name(port_pair)
+                    port_pair_uuid = self._get_port_pair_uuid(lport_pair_name)
+                    port_pair_uuid_list.append(port_pair_uuid)
+                txn.add(self._ovn.create_lport_pair_group(
+                        lport_pair_group_name=lport_pair_group_name,
+                        lport_chain_name=lport_chain_name,
+                        port_pairs=port_pair_uuid_list))
+        return True
+
+    def _update_ovn_flow_classifier(self, port_chain_id, add, delete):
+        LOG.debug("Update ovn flow classifier, add is %s, delete is %s",
+                  add, delete)
+        lport_chain_name = self._sfc_name(port_chain_id)
+        with self._ovn.transaction(check_error=True) as txn:
+            for fc in delete:
+                flow_classifier_name = self._sfc_name(fc)
+                txn.add(self._ovn.delete_lflow_classifier(
+                        lport_chain_name=lport_chain_name,
+                        lflow_classifier_name=flow_classifier_name))
+
+            fcs = self._get_fcs_by_ids(add)
+            for fc_detail in fcs:
+                flow_classifier_name = self._sfc_name(fc_detail['id'])
+                lport_uuid = self._check_logical_port_exist(
+                    fc_detail['logical_source_port'])
+                if lport_uuid is None:
+                    LOG.error("Logical port %s does not exist",
+                              fc_detail['logical_source_port'])
+                    return False
+                txn.add(self._ovn.create_lflow_classifier(
+                    lport_chain_name=lport_chain_name,
+                    lflow_classifier_name=flow_classifier_name,
+                    logical_source_port=lport_uuid))
+        return True
 
     @log_helpers.log_method_call
     def update_port_pair_group(self, context):
@@ -228,16 +372,22 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         original = context.original
 
         if set(current['port_pairs']) == set(original['port_pairs']):
-            return
+            return True
 
         # Update the port pair to ovn
         add = set(current['port_pairs']) - set(original['port_pairs'])
         delete = set(original['port_pairs']) - set(current['port_pairs'])
         status = self._update_ovn_port_pairs(context, current['id'],
                                              add, delete)
-        # Update port-pair-group to ovn
-        self._update_ovn_port_pair_group(current)
-        
+        if not status:
+            LOG.error("Update port pair group %s failed", current['id'])
+            return False
+
+        status = self._set_ovn_port_pair_group(current)
+        if not status:
+            LOG.error("Update port pair group %s failed", current['id'])
+            return False
+        return True
 
     @log_helpers.log_method_call
     def create_port_pair(self, context):
@@ -323,7 +473,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
 
     def _get_port_pairs_in_port_pair_group(self, port_pair_group_name):
         lppg = idlutils.row_by_value(self._ovn.idl, 'Logical_Port_Pair_Group',
-                                    'name', port_pair_group_name)
+                                     'name', port_pair_group_name)
         return lppg.port_pairs
 
     def _get_flow_classifier_uuid(self, fc_name):
@@ -338,7 +488,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             # raise RuntimeError(msg)
         return fc_uuid
 
-    def _update_ovn_port_pair_group(self, port_pair_group):
+    def _set_ovn_port_pair_group(self, port_pair_group):
         LOG.debug("Update ovn port pair group %s", port_pair_group['id'])
         port_pair_uuid_list = []
         port_pairs = port_pair_group['port_pairs']
@@ -351,7 +501,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             txn.add(self._ovn.set_lport_pair_group(
                 lport_pair_group_name=lport_pair_group_name,
                 port_pairs=port_pair_uuid_list))
-
+        return True
 
     def _create_ovn_port_pair_group(self, context, port_chain,
                                     port_pair_groups):
@@ -427,8 +577,8 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                         context, port_pair['ingress'])
                     if lswitch_name is None:
                         LOG.error("Logical switch does not exist for "
-                                  "flow_classifier logical source port: %s" %
-                                  flow_classifier['logical_source_port'])
+                                  "port pair %s ingress port" %
+                                  port_pair['id'])
                         return False
                     inport_uuid = self._check_logical_port_exist(
                         port_pair['ingress'])
@@ -468,8 +618,8 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                         context, port_pair['ingress'])
                     if lswitch_name is None:
                         LOG.error("Logical switch does not exist for "
-                                  "flow_classifier logical source port: %s" %
-                                  flow_classifier['logical_source_port'])
+                                  "port pair %s ingress port" %
+                                  port_pair['id'])
                         return False
                     txn.add(self._ovn.delete_lport_pair(
                             lport_pair_name=lport_pair_name,
