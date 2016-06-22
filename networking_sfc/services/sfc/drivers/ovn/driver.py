@@ -38,16 +38,12 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
     def initialize(self):
         super(OVNSfcDriver, self).initialize()
         self._ovn_property = None
-        self.id_pool = ovs_sfc_db.IDAllocation(self.admin_context)
         LOG.debug("OVN SFC driver init done")
 
     @log_helpers.log_method_call
     def _get_portpair_ids(self, context, pg_id):
-        group_intid = self.id_pool.get_intid_by_uuid('group', pg_id)
-        LOG.debug('group_intid: %s', group_intid)
         pg = context._plugin.get_port_pair_group(context._plugin_context,
                                                  pg_id)
-        LOG.debug("Port Pairs: %s" % pg['port_pairs'])
         return pg['port_pairs']
 
     def _get_port_pair_detail(self, context, port_pair_id):
@@ -80,7 +76,6 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
 
     def _create_ovn_dict(self, context, port_chain):
         ovn_dict = {}
-        LOG.debug("Port Chain (create_port_chain): %s " % port_chain)
         ovn_dict = {
             'id': port_chain['id'],
             'name': port_chain['name'],
@@ -101,46 +96,32 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                 port_pair_detail = self._get_port_pair_detail(
                     context, port_pair_item)
                 port_pair_list.append(port_pair_detail)
-                LOG.debug("Port Pair Info: %s" % port_pair_detail)
-                LOG.debug("Ingress port id: %s " % port_pair_detail['ingress'])
-                LOG.debug("Egress port id: %s " % port_pair_detail['egress'])
             port_pair_group["port_pairs"] = port_pair_list
             port_pair_group["id"] = port_group_item
             port_pair_group_list.append(port_pair_group)
         ovn_dict['port_pair_groups'] = port_pair_group_list
-        #
-        # Get flow classifier
-        #
-        # TODO(John):
-        # Convert classification rules into OVN ACL Rules
-        # Still need the destination port id to drive the OVN rules
-        #
         ovn_dict['flow_classifier'] = self._get_portchain_fcs(port_chain)
-        #
-        # Create a new set of rules in OVN to insert VNF
-        #
         LOG.debug("Port Chain Definition: %s " % ovn_dict)
         return ovn_dict
 
     @log_helpers.log_method_call
     def create_port_chain(self, context):
         port_chain = context.current
-        LOG.debug("Port Chain (create_port_chain): %s " % port_chain)
         ovn_dict = self._create_ovn_dict(context, port_chain)
         status = self._create_ovn_sfc_about_logical_switch(context, ovn_dict)
         if not status:
-            LOG.error("Could not create port chain %s in ovn" % ovn_dict['id'])
+            LOG.error("Could not create port chain %s in OVN" % ovn_dict['id'])
 
         status = self._create_ovn_flow_classifier(context, ovn_dict['id'],
                                                   ovn_dict['flow_classifier'])
         if not status:
-            LOG.error("Could not create flow classifier in ovn for port"
+            LOG.error("Could not create flow classifier in OVN for port"
                       " chain %s" % ovn_dict['id'])
 
         status = self._create_ovn_port_pair_group(context, ovn_dict['id'],
                                                   ovn_dict['port_pair_groups'])
         if not status:
-            LOG.error("Could not create port pair groups in ovn for port"
+            LOG.error("Could not create port pair groups in OVN for port"
                       " chain %s" % ovn_dict['id'])
 
     @log_helpers.log_method_call
@@ -148,7 +129,6 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         status = True
         port_chain = context.current
         portchain_id = port_chain['id']
-        LOG.debug("Delete port chain")
         #
         # Delete OVN entries
         #
@@ -182,7 +162,8 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             status = self._update_ovn_port_pair_groups(
                 context, current['id'], add_ppg, delete_ppg)
             if not status:
-                LOG.error("Failed to update portchain id: %s" % current['id'])
+                LOG.error("Failed to update port pair groups for port chain"
+                          " %s" % current['id'])
                 return False
 
         if current['flow_classifiers'] != original['flow_classifiers']:
@@ -193,7 +174,8 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             status = self._update_ovn_flow_classifier(current['id'], add_fc,
                                                       delete_fc)
             if not status:
-                LOG.error("Failed to update portchain id: %s" % current['id'])
+                LOG.error("Failed to update flow classifier for port chain"
+                          " %s" % current['id'])
                 return False
 
     @log_helpers.log_method_call
@@ -207,7 +189,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
     def _update_ovn_port_pairs(self, context, port_pair_group_id, add, delete):
         # update port-pairs in ovn
         lport_pair_group_name = self._sfc_name(port_pair_group_id)
-        LOG.debug("Update ovn port pairs, add is %s, delete is %s",
+        LOG.debug("Update OVN port pairs, add is %s, delete is %s",
                   add, delete)
         with self._ovn.transaction(check_error=True) as txn:
             for pp in add:
@@ -259,7 +241,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
 
     def _update_ovn_port_pairs_for_port_groups(self, context, add, delete):
         # update port-pairs in ovn
-        LOG.debug("Update ovn port pairs for port groups, add is %s, "
+        LOG.debug("Update OVN port pairs for port groups, add is %s, "
                   "delete is %s", add, delete)
         with self._ovn.transaction(check_error=True) as txn:
             for ppg in delete:
@@ -315,7 +297,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
 
     def _update_ovn_port_pair_groups(self, context, port_chain_id,
                                      add, delete):
-        LOG.debug("Update ovn port pair groups, add is %s, delete is %s",
+        LOG.debug("Update OVN port pair groups, add is %s, delete is %s",
                   add, delete)
         lport_chain_name = self._sfc_name(port_chain_id)
         with self._ovn.transaction(check_error=True) as txn:
@@ -333,6 +315,10 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                 for port_pair in ppg_detail['port_pairs']:
                     lport_pair_name = self._sfc_name(port_pair)
                     port_pair_uuid = self._get_port_pair_uuid(lport_pair_name)
+                    if port_pair_uuid is None:
+                        LOG.error("Logical port pair %s does not exist",
+                                  port_pair)
+                        return False
                     port_pair_uuid_list.append(port_pair_uuid)
                 txn.add(self._ovn.create_lport_pair_group(
                         lport_pair_group_name=lport_pair_group_name,
@@ -341,7 +327,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         return True
 
     def _update_ovn_flow_classifier(self, port_chain_id, add, delete):
-        LOG.debug("Update ovn flow classifier, add is %s, delete is %s",
+        LOG.debug("Update OVN flow classifier, add is %s, delete is %s",
                   add, delete)
         lport_chain_name = self._sfc_name(port_chain_id)
         with self._ovn.transaction(check_error=True) as txn:
@@ -458,7 +444,6 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             msg = ("Logical Switch %s does not exist got port_id %s") % (
                 lswitch_name, port_id)
             LOG.error(msg)
-            # raise RuntimeError(msg)
             lswitch_name = None
         return lswitch_name
 
@@ -473,7 +458,6 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             lport_uuid = lport.uuid
         except idlutils.RowNotFound:
             LOG.error("Logical Port %s does not exist", port_name)
-            # raise RuntimeError(msg)
             lport_uuid = None
         return lport_uuid
 
@@ -481,9 +465,15 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
     # Get the port pair uuid
     #
     def _get_port_pair_uuid(self, port_pair_name):
-        lpp = idlutils.row_by_value(self._ovn.idl, 'Logical_Port_Pair',
-                                    'name', port_pair_name)
-        return lpp.uuid
+        lpp_uuid = None
+        try:
+            lpp = idlutils.row_by_value(self._ovn.idl, 'Logical_Port_Pair',
+                                        'name', port_pair_name)
+            lpp_uuid = lpp.uuid
+        except idlutils.RowNotFound:
+            LOG.error("Logical Port Pair %s does not exist", port_pair_name)
+            lpp_uuid = None
+        return lpp_uuid
 
     def _get_port_pairs_in_port_pair_group(self, port_pair_group_name):
         lppg = idlutils.row_by_value(self._ovn.idl, 'Logical_Port_Pair_Group',
@@ -511,6 +501,10 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
             for port_pair in port_pairs:
                 lport_pair_name = self._sfc_name(port_pair)
                 port_pair_uuid = self._get_port_pair_uuid(lport_pair_name)
+                if port_pair_uuid is None:
+                    LOG.error("Logical port pair %s does not exist",
+                              port_pair)
+                    return False
                 port_pair_uuid_list.append(port_pair_uuid)
             txn.add(self._ovn.set_lport_pair_group(
                 lport_pair_group_name=lport_pair_group_name,
@@ -532,6 +526,10 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                 for port_pair in port_pairs:
                     lport_pair_name = self._sfc_name(port_pair['id'])
                     port_pair_uuid = self._get_port_pair_uuid(lport_pair_name)
+                    if port_pair_uuid is None:
+                        LOG.error("Logical port pair %s does not exist",
+                                  port_pair['id'])
+                        return False
                     port_pair_uuid_list.append(port_pair_uuid)
                 txn.add(self._ovn.create_lport_pair_group(
                         lport_pair_group_name=lport_pair_group_name,
@@ -624,21 +622,16 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                             inport=inport_uuid))
         return status
 
-    #
-    # Interface to delete entry in OVN nb-db for VNF port-pair
-    #
     def _delete_ovn_sfc(self, context, sfc_instance):
         status = True
         lport_chain_name = self._sfc_name(sfc_instance['id'])
         with self._ovn.transaction(check_error=True) as txn:
             #
-            # delte port pair from logcial switch
+            # delete port pair from logcial switch
             #
             port_pair_groups = sfc_instance['port_pair_groups']
             for group in port_pair_groups:
                 port_pairs = group['port_pairs']
-                # Insert Ports Pair into OVN
-                #
                 lport_pair_group_name = self._sfc_name(group['id'])
                 for port_pair in port_pairs:
                     lport_pair_name = self._sfc_name(port_pair['id'])
@@ -654,7 +647,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                             lswitch=lswitch_name,
                             lport_pair_group_name=lport_pair_group_name))
             #
-            # delete port chain from ovn
+            # delete port chain from OVN
             #
             for flow_classifier in sfc_instance['flow_classifier']:
                 lswitch_name = self._check_lswitch_exists(
