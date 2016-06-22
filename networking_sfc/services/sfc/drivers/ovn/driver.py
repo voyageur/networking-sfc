@@ -360,10 +360,24 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                     LOG.error("Logical port %s does not exist",
                               fc_detail['logical_source_port'])
                     return False
+                fc_detail['logical_source_port'] = lport_uuid
+                lport_uuid = self._check_logical_port_exist(
+                    fc_detail['logical_destination_port'])
+                if lport_uuid is None:
+                    LOG.error("Logical port %s does not exist",
+                              fc_detail['logical_destination_port'])
+                    return False
+                fc_detail['logical_destination_port'] = lport_uuid
+                # Remove the flow classifier parameters not support in ovn
+                fc_detail.pop('id')
+                fc_detail.pop('description')
+                fc_detail.pop('l7_parameters')
+                fc_detail.pop('name')
+                fc_detail.pop('tenant_id')
                 txn.add(self._ovn.create_lflow_classifier(
                     lport_chain_name=lport_chain_name,
                     lflow_classifier_name=flow_classifier_name,
-                    logical_source_port=lport_uuid))
+                    **fc_detail))
         return True
 
     @log_helpers.log_method_call
@@ -540,10 +554,24 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                     LOG.error("Logical port %s does not exist",
                               flow_classifier['logical_source_port'])
                     return False
+                flow_classifier['logical_source_port'] = lport_uuid
+                lport_uuid = self._check_logical_port_exist(
+                    flow_classifier['logical_destination_port'])
+                if lport_uuid is None:
+                    LOG.error("Logical port %s does not exist",
+                              flow_classifier['logical_destination_port'])
+                    return False
+                flow_classifier['logical_destination_port'] = lport_uuid
+                # Remove the flow classifier parameters not support in ovn
+                flow_classifier.pop('id')
+                flow_classifier.pop('description')
+                flow_classifier.pop('l7_parameters')
+                flow_classifier.pop('name')
+                flow_classifier.pop('tenant_id')
                 txn.add(self._ovn.create_lflow_classifier(
                     lport_chain_name=lport_chain_name,
                     lflow_classifier_name=flow_classifier_name,
-                    logical_source_port=lport_uuid))
+                    **flow_classifier))
         return status
 
     def _create_ovn_sfc_about_logical_switch(self, context, sfc_instance):
