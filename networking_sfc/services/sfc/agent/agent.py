@@ -15,7 +15,7 @@
 import six
 import sys
 
-from neutron_lib import exceptions
+from neutron_lib import constants as n_const
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
@@ -29,7 +29,6 @@ from networking_sfc.services.sfc.drivers.ovs import rpc_topics as sfc_topics
 
 from neutron.agent import rpc as agent_rpc
 from neutron.common import config as common_config
-from neutron.common import constants as n_const
 from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.common import utils as q_utils
@@ -37,16 +36,11 @@ from neutron.plugins.ml2.drivers.openvswitch.agent.common import (
     constants as ovs_const)
 from neutron.plugins.ml2.drivers.openvswitch.agent import ovs_neutron_agent
 
-from networking_sfc._i18n import _, _LE, _LI, _LW
+from networking_sfc._i18n import _LE, _LI, _LW
 
 LOG = logging.getLogger(__name__)
 
-agent_opts = [
-    cfg.StrOpt('sfc_encap_mode', default='mpls',
-               help=_("The encapsulation mode of sfc.")),
-]
 
-cfg.CONF.register_opts(agent_opts, "AGENT")
 cfg.CONF.import_group('OVS', 'neutron.plugins.ml2.drivers.openvswitch.agent.'
                       'common.config')
 
@@ -69,10 +63,6 @@ PC_DEF_PRI = 20
 PC_INGRESS_PRI = 30
 
 
-class FeatureSupportError(exceptions.NeutronException):
-    message = _("Current sfc agent don't support %(feature)s ")
-
-
 class SfcPluginApi(object):
     def __init__(self, topic, host):
         self.host = host
@@ -90,12 +80,6 @@ class SfcPluginApi(object):
         return cctxt.call(
             context, 'get_flowrules_by_host_portid',
             host=self.host, port_id=port_id)
-
-    def get_all_src_node_flowrules(self, context):
-        cctxt = self.client.prepare()
-        return cctxt.call(
-            context, 'get_all_src_node_flowrules',
-            host=self.host)
 
 
 class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
@@ -116,16 +100,8 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
         super(OVSSfcAgent, self).__init__(
             bridge_classes, conf=conf)
 
-        self.overlay_encap_mode = cfg.CONF.AGENT.sfc_encap_mode
         self._sfc_setup_rpc()
-
-        if self.overlay_encap_mode == 'eth_nsh':
-            raise FeatureSupportError(feature=self.overlay_encap_mode)
-        elif self.overlay_encap_mode == 'vxlan_nsh':
-            raise FeatureSupportError(feature=self.overlay_encap_mode)
-        elif self.overlay_encap_mode == 'mpls':
-            self._clear_sfc_flow_on_int_br()
-            self._setup_src_node_flow_rules_with_mpls()
+        self._clear_sfc_flow_on_int_br()
 
     def _sfc_setup_rpc(self):
         self.sfc_plugin_rpc = SfcPluginApi(
@@ -297,58 +273,19 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
                     **match_info
                 )
 
-    def _update_destination_ingress_flow_rules(self, flowrule):
-        for flow_info in self._get_flow_infos_from_flow_classifier_list(
-            flowrule['del_fcs']
-        ):
-            self.int_br.delete_flows(
-                table=ovs_const.LOCAL_SWITCHING,
-                in_port=self.patch_tun_ofport,
-                **flow_info
-            )
-        for flow_info in self._get_flow_infos_from_flow_classifier_list(
-            flowrule['add_fcs']
-        ):
-            inport_match = dict(in_port=self.patch_tun_ofport)
-            match_info = dict(inport_match, **flow_info)
-            self.int_br.install_normal(table_id=ovs_const.LOCAL_SWITCHING,
-                                       priority=PC_INGRESS_PRI,
-                                       **match_info)
-
-    def _setup_src_node_flow_rules_with_mpls(self):
-        flow_rules = self.sfc_plugin_rpc.get_all_src_node_flowrules(
-            self.context)
-        if not flow_rules:
-            return
-        for fr in flow_rules:
-            self._setup_egress_flow_rules_with_mpls(fr, False)
-            # if the traffic is from patch port, it means the destination
-            # is on the this host. so implement normal forward but not
-            # match the traffic from the source.
-            # Next step need to do is check if the traffic is from vRouter
-            # on the local host, also need to implement same normal process.
-            self._update_destination_ingress_flow_rules(fr)
-
     def _setup_egress_flow_rules_with_mpls(self, flowrule, match_inport=True):
         group_id = flowrule.get('next_group_id', None)
         next_hops = flowrule.get('next_hops', None)
 
-        if not next_hops:
-            return
         # if the group is not none, install the egress rule for this SF
         if (
-            (flowrule['node_type'] == constants.SRC_NODE or
-             flowrule['node_type'] == constants.SF_NODE) and group_id
+            group_id and next_hops
         ):
             # 1st, install br-int flow rule on table ACROSS_SUBNET_TABLE
             # and group table
             buckets = []
+            vlan = self._get_vlan_by_port(flowrule['egress'])
             for item in next_hops:
-                if item['net_uuid'] not in self.local_vlan_map:
-                    self.provision_local_vlan(item['net_uuid'],
-                                              item['network_type'],
-                                              None, item['segment_id'])
-                lvm = self.local_vlan_map[item['net_uuid']]
                 bucket = (
                     'bucket=weight=%d, mod_dl_dst:%s,'
                     'resubmit(,%d)' % (
@@ -358,52 +295,30 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
                     )
                 )
                 buckets.append(bucket)
-
-                no_across_subnet_actions_list = []
-                across_subnet_actions_list = []
-
+                subnet_actions_list = []
                 push_mpls = (
                     "push_mpls:0x8847,"
                     "set_mpls_label:%d,"
                     "set_mpls_ttl:%d,"
                     "mod_vlan_vid:%d," %
                     ((flowrule['nsp'] << 8) | flowrule['nsi'],
-                     flowrule['nsi'], lvm.vlan))
-
-                no_across_subnet_actions_list.append(push_mpls)
-                across_subnet_actions_list.append(push_mpls)
+                     flowrule['nsi'], vlan))
+                subnet_actions_list.append(push_mpls)
 
                 if item['local_endpoint'] == self.local_ip:
-                    no_across_subnet_actions = (
+                    subnet_actions = (
                         "resubmit(,%d)" % INGRESS_TABLE)
-                    across_subnet_actions = (
-                        "mod_dl_src:%s, resubmit(,%d)" %
-                        (item['gw_mac'], INGRESS_TABLE))
                 else:
                     # same subnet with next hop
-                    no_across_subnet_actions = ("output:%s" %
-                                                self.patch_tun_ofport)
-                    across_subnet_actions = ("mod_dl_src:%s, output:%s" %
-                                             (item['gw_mac'],
-                                              self.patch_tun_ofport))
-                no_across_subnet_actions_list.append(no_across_subnet_actions)
-                across_subnet_actions_list.append(across_subnet_actions)
+                    subnet_actions = "output:%s" % self.patch_tun_ofport
+                subnet_actions_list.append(subnet_actions)
 
-                self.int_br.add_flow(
-                    table=ACROSS_SUBNET_TABLE,
-                    priority=1,
-                    dl_dst=item['mac_address'],
-                    dl_type=0x0800,
-                    nw_src=item['cidr'],
-                    actions="%s" %
-                            (','.join(no_across_subnet_actions_list)))
-                # different subnet with next hop
                 self.int_br.add_flow(
                     table=ACROSS_SUBNET_TABLE,
                     priority=0,
                     dl_dst=item['mac_address'],
-                    actions="%s" %
-                            (','.join(across_subnet_actions_list)))
+                    dl_type=0x0800,
+                    actions="%s" % ','.join(subnet_actions_list))
 
             buckets = ','.join(buckets)
             group_content = self.int_br.dump_group_for_id(group_id)
@@ -431,6 +346,23 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
                 enc_actions,
                 add_flow=True,
                 match_inport=match_inport)
+        else:
+            # to uninstall the new removed flow classifiers
+            self._setup_local_switch_flows_on_int_br(
+                flowrule,
+                flowrule['del_fcs'],
+                None,
+                add_flow=False,
+                match_inport=True
+            )
+
+            # to install the added flow classifiers
+            self._setup_local_switch_flows_on_int_br(
+                flowrule,
+                flowrule['add_fcs'],
+                actions='normal',
+                add_flow=True,
+                match_inport=True)
 
     def _get_vlan_by_port(self, port_id):
         for key, val in six.iteritems(self.network_ports):
@@ -459,48 +391,10 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
 
             self.int_br.add_flow(**match_field)
 
-    def _setup_last_egress_flow_rules_with_mpls(self, flowrule):
-        group_id = flowrule.get('next_group_id', None)
-
-        # check whether user assign the destination neutron port.
-        if (
-            constants.SF_NODE == flowrule['node_type'] and
-            not group_id and
-            flowrule['egress'] is not None
-        ):
-            # to uninstall the new removed flow classifiers
-            self._setup_local_switch_flows_on_int_br(
-                flowrule,
-                flowrule['del_fcs'],
-                None,
-                add_flow=False,
-                match_inport=True
-            )
-
-            # to install the added flow classifiers
-            self._setup_local_switch_flows_on_int_br(
-                flowrule,
-                flowrule['add_fcs'],
-                actions='normal',
-                add_flow=True,
-                match_inport=True)
-
-    def _get_flow_classifier_dest_port_info(self,
-                                            logical_destination_port,
-                                            flowrule):
-        for next_hop in flowrule['next_hops']:
-            # this flow classifier's destination port should match
-            # with the nexthop's ingress port id
-            if logical_destination_port in next_hop.values():
-                return next_hop
-
-        return None
-
     def _update_flow_rules_with_mpls_enc(self, flowrule, flowrule_status):
         try:
             if flowrule.get('egress', None):
                 self._setup_egress_flow_rules_with_mpls(flowrule)
-                self._setup_last_egress_flow_rules_with_mpls(flowrule)
             if flowrule.get('ingress', None):
                 self._setup_ingress_flow_rules_with_mpls(flowrule)
 
@@ -529,7 +423,7 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
                         )
                     )
                     if flowrule:
-                        self._treat_delete_flow_rules(
+                        self._delete_flow_rule_with_mpls_enc(
                             flowrule, flowrule_status)
             LOG.debug(
                 "_delete_ports_flowrules_by_id received, count= %s", count)
@@ -544,7 +438,6 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
         try:
             LOG.debug("_delete_flow_rule_with_mpls_enc, flowrule = %s",
                       flowrule)
-            group_id = flowrule.get('next_group_id', None)
 
             # delete tunnel table flow rule on br-int(egress match)
             if flowrule['egress'] is not None:
@@ -555,41 +448,28 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
                     add_flow=False,
                     match_inport=True
                 )
+                # delete group table, need to check again
+                group_id = flowrule.get('next_group_id', None)
+                if group_id and flowrule.get('group_refcnt', None) <= 1:
+                    self.int_br.delete_group(group_id=group_id)
+                    for item in flowrule['next_hops']:
+                        self.int_br.delete_flows(
+                            table=ACROSS_SUBNET_TABLE,
+                            dl_dst=item['mac_address'])
 
-            # delete table INGRESS_TABLE ingress match flow rule
-            # on br-int(ingress match)
-            vif_port = self.int_br.get_vif_port_by_id(flowrule['ingress'])
-            if vif_port:
-                # third, install br-int flow rule on table INGRESS_TABLE
-                # for ingress traffic
-                self.int_br.delete_flows(
-                    table=INGRESS_TABLE,
-                    dl_type=0x8847,
-                    dl_dst=vif_port.vif_mac,
-                    mpls_label=flowrule['nsp'] << 8 | (flowrule['nsi'] + 1)
-                )
-
-            # delete group table, need to check again
-            if group_id and flowrule.get('group_refcnt', None) <= 1:
-                self.int_br.delete_group(group_id=group_id)
-                for item in flowrule['next_hops']:
+            if flowrule['ingress'] is not None:
+                # delete table INGRESS_TABLE ingress match flow rule
+                # on br-int(ingress match)
+                vif_port = self.int_br.get_vif_port_by_id(flowrule['ingress'])
+                if vif_port:
+                    # third, install br-int flow rule on table INGRESS_TABLE
+                    # for ingress traffic
                     self.int_br.delete_flows(
-                        table=ACROSS_SUBNET_TABLE,
-                        dl_dst=item['mac_address'])
-            elif (not group_id and
-                  flowrule['egress'] is not None):
-                # to delete last hop flow rule
-                for each in flowrule['del_fcs']:
-                    if each.get('logical_destination_port', None):
-                        ldp = self._get_flow_classifier_dest_port_info(
-                            each['logical_destination_port'],
-                            flowrule
-                        )
-                        if ldp:
-                            self.int_br.delete_flows(
-                                table=ACROSS_SUBNET_TABLE,
-                                dl_dst=ldp['mac_address'])
-
+                        table=INGRESS_TABLE,
+                        dl_type=0x8847,
+                        dl_dst=vif_port.vif_mac,
+                        mpls_label=flowrule['nsp'] << 8 | (flowrule['nsi'] + 1)
+                    )
         except Exception as e:
             flowrule_status_temp = {}
             flowrule_status_temp['id'] = flowrule['id']
@@ -598,32 +478,16 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
             LOG.exception(e)
             LOG.error(_LE("_delete_flow_rule_with_mpls_enc failed"))
 
-    def _treat_update_flow_rules(self, flowrule, flowrule_status):
-        if self.overlay_encap_mode == 'eth_nsh':
-            raise FeatureSupportError(feature=self.overlay_encap_mode)
-        elif self.overlay_encap_mode == 'vxlan_nsh':
-            raise FeatureSupportError(feature=self.overlay_encap_mode)
-        elif self.overlay_encap_mode == 'mpls':
-            self._update_flow_rules_with_mpls_enc(flowrule, flowrule_status)
-
-    def _treat_delete_flow_rules(self, flowrule, flowrule_status):
-        if self.overlay_encap_mode == 'eth_nsh':
-            raise FeatureSupportError(feature=self.overlay_encap_mode)
-        elif self.overlay_encap_mode == 'vxlan_nsh':
-            raise FeatureSupportError(feature=self.overlay_encap_mode)
-        elif self.overlay_encap_mode == 'mpls':
-            self._delete_flow_rule_with_mpls_enc(
-                flowrule, flowrule_status)
-
     def update_flow_rules(self, context, **kwargs):
+        flowrule_status = []
         try:
-            flowrule_status = []
             flowrules = kwargs['flowrule_entries']
             LOG.debug("update_flow_rules received,  flowrules = %s",
                       flowrules)
 
             if flowrules:
-                self._treat_update_flow_rules(flowrules, flowrule_status)
+                self._update_flow_rules_with_mpls_enc(
+                    flowrules, flowrule_status)
         except Exception as e:
             LOG.exception(e)
             LOG.error(_LE("update_flow_rules failed"))
@@ -633,12 +497,13 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
                 self.context, flowrule_status)
 
     def delete_flow_rules(self, context, **kwargs):
+        flowrule_status = []
         try:
-            flowrule_status = []
             flowrules = kwargs['flowrule_entries']
             LOG.debug("delete_flow_rules received,  flowrules= %s", flowrules)
             if flowrules:
-                self._treat_delete_flow_rules(flowrules, flowrule_status)
+                self._delete_flow_rule_with_mpls_enc(
+                    flowrules, flowrule_status)
         except Exception as e:
             LOG.exception(e)
             LOG.error(_LE("delete_flow_rules failed"))
@@ -646,42 +511,6 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
         if flowrule_status:
             self.sfc_plugin_rpc.update_flowrules_status(
                 self.context, flowrule_status)
-
-    def update_src_node_flow_rules(self, context, **kwargs):
-        flowrule = kwargs['flowrule_entries']
-        if self.overlay_encap_mode == 'mpls':
-            self._setup_egress_flow_rules_with_mpls(flowrule,
-                                                    match_inport=False)
-            self._update_destination_ingress_flow_rules(flowrule)
-
-    def _delete_src_node_flow_rules_with_mpls(self, flowrule,
-                                              match_inport=False):
-        LOG.debug("_delete_src_node_flow_rules_with_mpls, flowrule = %s",
-                  flowrule)
-        group_id = flowrule.get('next_group_id', None)
-
-        # delete br-int table 0 full match flow
-        self._setup_local_switch_flows_on_int_br(
-            flowrule,
-            flowrule['del_fcs'],
-            None,
-            add_flow=False,
-            match_inport=False)
-
-        # delete group table, need to check again
-        if None != group_id and flowrule.get('group_refcnt', None) <= 1:
-            self.int_br.delete_group(group_id=group_id)
-            for item in flowrule['next_hops']:
-                self.int_br.delete_flows(
-                    table=ACROSS_SUBNET_TABLE,
-                    dl_dst=item['mac_address'])
-
-    def delete_src_node_flow_rules(self, context, **kwargs):
-        flowrule = kwargs['flowrule_entries']
-        if self.overlay_encap_mode == 'mpls':
-            self._delete_src_node_flow_rules_with_mpls(flowrule,
-                                                       match_inport=False)
-            self._update_destination_ingress_flow_rules(flowrule)
 
     def sfc_treat_devices_added_updated(self, port_id):
         resync = False
@@ -695,7 +524,8 @@ class OVSSfcAgent(ovs_neutron_agent.OVSNeutronAgent):
             )
             if flows_list:
                 for flow in flows_list:
-                    self._treat_update_flow_rules(flow, flowrule_status)
+                    self._update_flow_rules_with_mpls_enc(
+                        flow, flowrule_status)
         except Exception as e:
             LOG.exception(e)
             LOG.error(_LE("portchain_treat_devices_added_updated failed"))

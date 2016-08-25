@@ -17,7 +17,7 @@ from abc import abstractmethod
 
 import six
 
-from neutron_lib.api import converters
+from neutron_lib.api import converters as lib_converters
 from neutron_lib import exceptions as neutron_exc
 from oslo_config import cfg
 
@@ -35,10 +35,54 @@ neutron_ext.append_api_extensions_path(extensions.__path__)
 SFC_EXT = "sfc"
 SFC_PREFIX = "/sfc"
 
-SUPPORTED_CHAIN_PARAMETERS = [('correlation', 'mpls')]
-DEFAULT_CHAIN_PARAMETER = {'correlation': 'mpls'}
-SUPPORTED_SF_PARAMETERS = [('correlation', None)]
-DEFAULT_SF_PARAMETER = {'correlation': None}
+SUPPORTED_LB_FIELDS = [
+    "eth_src", "eth_dst", "ip_src", "ip_dst",
+    "tcp_src", "tcp_dst", "udp_src", "udp_dst"
+]
+
+
+class InvalidLBField(neutron_exc.InvalidInput):
+    message = _("Unknown lb field %(field)s.")
+
+
+def normalize_lb_fields(lb_fields):
+    lb_fields = lib_converters.convert_none_to_empty_list(lb_fields)
+    for field in lb_fields:
+        if field not in SUPPORTED_LB_FIELDS:
+            raise InvalidLBField(
+                field=field)
+    return lb_fields
+
+
+SUPPORTED_CHAIN_PARAMETERS = {
+    'correlation': {
+        'allow_post': True,
+        'default': 'mpls',
+        'validate': {'type:values': ['mpls']}
+    }
+}
+SUPPORTED_SF_PARAMETERS = {
+    'correlation': {
+        'allow_post': True,
+        'default': None,
+        'validate': {'type:values': [None]}
+    },
+    'weight': {
+        'allow_post': True,
+        'default': 1,
+        'validate': {'type:non_negative': None},
+        'convert_to': lib_converters.convert_to_int
+    }
+}
+SUPPORTED_PPG_PARAMETERS = {
+    'lb_fields': {
+        'allow_post': True,
+        'default': None,
+        'validate': {'type:list_of_unique_strings': None},
+        'convert_to': normalize_lb_fields
+    }
+}
+MAX_CHAIN_ID = 65535
 
 
 # Port Chain Exceptions
@@ -46,23 +90,39 @@ class PortChainNotFound(neutron_exc.NotFound):
     message = _("Port Chain %(id)s not found.")
 
 
+class PortChainUnavailableChainId(neutron_exc.InvalidInput):
+    message = _("Port Chain %(id)s no available chain id.")
+
+
 class PortChainFlowClassifierInConflict(neutron_exc.InvalidInput):
     message = _("Flow Classifier %(fc_id)s conflicts with "
                 "Flow Classifier %(pc_fc_id)s in port chain %(pc_id)s.")
 
 
+class PortChainChainIdInConflict(neutron_exc.InvalidInput):
+    message = _("Chain id %(chain_id)s conflicts with "
+                "Chain id in port chain %(pc_id)s.")
+
+
 class InvalidChainParameter(neutron_exc.InvalidInput):
     message = _(
-        "Chain parameter does not support (%%(key)s, %%(value)s). "
+        "Invalid chain parameter: %%(error_message)s. "
         "Supported chain parameters are %(supported_paramters)s."
     ) % {'supported_paramters': SUPPORTED_CHAIN_PARAMETERS}
 
 
 class InvalidServiceFunctionParameter(neutron_exc.InvalidInput):
     message = _(
-        "Service function parameter does not support (%%(key)s, %%(value)s). "
+        "Invalid Service function parameter: %%(error_message)s. "
         "Supported service function parameters are %(supported_paramters)s."
     ) % {'supported_paramters': SUPPORTED_SF_PARAMETERS}
+
+
+class InvalidPortPairGroupParameter(neutron_exc.InvalidInput):
+    message = _(
+        "Invalid port pair group parameter: %%(error_message)s. "
+        "Supported port pair group parameters are %(supported_paramters)s."
+    ) % {'supported_paramters': SUPPORTED_PPG_PARAMETERS}
 
 
 class PortPairGroupNotSpecified(neutron_exc.InvalidInput):
@@ -122,29 +182,57 @@ def normalize_string(value):
 
 
 def normalize_port_pair_groups(port_pair_groups):
-    port_pair_groups = converters.convert_to_list(port_pair_groups)
+    port_pair_groups = lib_converters.convert_to_list(port_pair_groups)
     if not port_pair_groups:
         raise PortPairGroupNotSpecified()
     return port_pair_groups
 
 
 def normalize_chain_parameters(parameters):
-    parameters = converters.convert_none_to_empty_dict(parameters)
-    if not parameters:
-        return DEFAULT_CHAIN_PARAMETER
-    for key, value in six.iteritems(parameters):
-        if (key, value) not in SUPPORTED_CHAIN_PARAMETERS:
-            raise InvalidChainParameter(key=key, value=value)
+    parameters = lib_converters.convert_none_to_empty_dict(parameters)
+    for key in parameters:
+        if key not in SUPPORTED_CHAIN_PARAMETERS:
+            raise InvalidChainParameter(
+                error_message='Unknown key %s.' % key)
+    try:
+        attr.fill_default_value(
+            SUPPORTED_CHAIN_PARAMETERS, parameters)
+        attr.convert_value(
+            SUPPORTED_CHAIN_PARAMETERS, parameters)
+    except ValueError as error:
+        raise InvalidChainParameter(error_message=str(error))
     return parameters
 
 
 def normalize_sf_parameters(parameters):
-    parameters = converters.convert_none_to_empty_dict(parameters)
-    if not parameters:
-        return DEFAULT_SF_PARAMETER
-    for key, value in six.iteritems(parameters):
-        if (key, value) not in SUPPORTED_SF_PARAMETERS:
-            raise InvalidServiceFunctionParameter(key=key, value=value)
+    parameters = lib_converters.convert_none_to_empty_dict(parameters)
+    for key in parameters:
+        if key not in SUPPORTED_SF_PARAMETERS:
+            raise InvalidServiceFunctionParameter(
+                error_message='Unknown key %s.' % key)
+    try:
+        attr.fill_default_value(
+            SUPPORTED_SF_PARAMETERS, parameters)
+        attr.convert_value(
+            SUPPORTED_SF_PARAMETERS, parameters)
+    except ValueError as error:
+        raise InvalidServiceFunctionParameter(error_message=str(error))
+    return parameters
+
+
+def normalize_ppg_parameters(parameters):
+    parameters = lib_converters.convert_none_to_empty_dict(parameters)
+    for key in parameters:
+        if key not in SUPPORTED_PPG_PARAMETERS:
+            raise InvalidPortPairGroupParameter(
+                error_message='Unknown key %s.' % key)
+    try:
+        attr.fill_default_value(
+            SUPPORTED_PPG_PARAMETERS, parameters)
+        attr.convert_value(
+            SUPPORTED_PPG_PARAMETERS, parameters)
+    except ValueError as error:
+        raise InvalidPortPairGroupParameter(error_message=str(error))
     return parameters
 
 
@@ -190,6 +278,11 @@ RESOURCE_ATTRIBUTE_MAP = {
             'is_visible': True,
             'validate': {'type:uuid': None},
             'primary_key': True},
+        'chain_id': {
+            'allow_post': True, 'allow_put': False,
+            'is_visible': True, 'default': 0,
+            'validate': {'type:range': (0, MAX_CHAIN_ID)},
+            'convert_to': lib_converters.convert_to_int},
         'name': {
             'allow_post': True, 'allow_put': True,
             'is_visible': True, 'default': None,
@@ -214,12 +307,12 @@ RESOURCE_ATTRIBUTE_MAP = {
             'allow_post': True, 'allow_put': True,
             'is_visible': True, 'default': None,
             'validate': {'type:uuid_list': None},
-            'convert_to': converters.convert_to_list},
+            'convert_to': lib_converters.convert_to_list},
         'chain_parameters': {
             'allow_post': True, 'allow_put': False,
             'is_visible': True, 'default': None,
             'validate': {'type:dict': None},
-            'convert_to': normalize_chain_parameters},
+            'convert_to': normalize_chain_parameters}
     },
     'port_pair_groups': {
         'id': {
@@ -227,6 +320,9 @@ RESOURCE_ATTRIBUTE_MAP = {
             'is_visible': True,
             'validate': {'type:uuid': None},
             'primary_key': True},
+        'group_id': {
+            'allow_post': False, 'allow_put': False,
+            'is_visible': True},
         'name': {
             'allow_post': True, 'allow_put': True,
             'is_visible': True, 'default': None,
@@ -246,7 +342,12 @@ RESOURCE_ATTRIBUTE_MAP = {
             'allow_post': True, 'allow_put': True,
             'is_visible': True, 'default': None,
             'validate': {'type:uuid_list': None},
-            'convert_to': converters.convert_none_to_empty_list},
+            'convert_to': lib_converters.convert_none_to_empty_list},
+        'port_pair_group_parameters': {
+            'allow_post': True, 'allow_put': False,
+            'is_visible': True, 'default': None,
+            'validate': {'type:dict': None},
+            'convert_to': normalize_ppg_parameters},
     },
 }
 

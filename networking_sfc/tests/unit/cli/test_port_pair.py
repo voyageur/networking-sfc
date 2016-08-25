@@ -30,8 +30,8 @@ egress_port_UUID = str(uuid.uuid4())
 
 class CLITestV20PortPairExtensionJSON(test_cli20.CLITestV20Base):
     def setUp(self):
-        self._mock_extension_loading()
         super(CLITestV20PortPairExtensionJSON, self).setUp()
+        self._mock_extension_loading()
         self.register_non_admin_status_resource('port_pair')
 
     def _create_patch(self, name, func=None):
@@ -69,7 +69,7 @@ class CLITestV20PortPairExtensionJSON(test_cli20.CLITestV20Base):
         self._test_create_resource(resource, cmd, name, myid, args,
                                    position_names, position_values)
 
-    def test_create_port_group_with_bidirectional_port(self):
+    def test_create_port_pair_with_bidirectional_port(self):
         """Create port_pair: myname with bidirectional port."""
         resource = 'port_pair'
         cmd = pp.PortPairCreate(test_cli20.MyApp(sys.stdout), None)
@@ -90,8 +90,8 @@ class CLITestV20PortPairExtensionJSON(test_cli20.CLITestV20Base):
         name = 'myname'
         myid = 'myid'
         desc = "my_port_pair"
-        service_fn_param = 'correlation=None'
-        service_fn_param_exp = {"correlation": "None"}
+        service_fn_param = 'correlation=None,weight=2'
+        service_fn_param_exp = {"correlation": "None", "weight": "2"}
         args = [name, '--ingress', ingress_port_UUID,
                 '--egress', egress_port_UUID, '--description', desc,
                 '--service-function-parameters', service_fn_param]
@@ -103,7 +103,7 @@ class CLITestV20PortPairExtensionJSON(test_cli20.CLITestV20Base):
                                    position_names, position_values)
 
     def test_update_port_pair_description(self):
-        """Update port_pair: myid --name myname."""
+        """Update port_pair: myid --description mydesc."""
         resource = 'port_pair'
         desc1 = "My_New_Port_Pair"
         cmd = pp.PortPairUpdate(test_cli20.MyApp(sys.stdout), None)

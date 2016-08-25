@@ -40,21 +40,6 @@ class SfcRpcCallback(object):
         LOG.debug('host: %s, port_id: %s', host, port_id)
         return pcfrs
 
-    def get_flow_classifier_by_portchain_id(self, context, **kwargs):
-        portchain_id = kwargs.get('portchain_id')
-        pcfcs = self.driver.get_flow_classifier_by_portchain_id(
-            context,
-            portchain_id)
-        LOG.debug('portchain id: %s', portchain_id)
-        return pcfcs
-
-    def get_all_src_node_flowrules(self, context, **kwargs):
-        host = kwargs.get('host')
-        pcfcs = self.driver.get_all_src_node_flowrules(
-            context)
-        LOG.debug('portchain get_src_node_flowrules, host: %s', host)
-        return pcfcs
-
     def update_flowrules_status(self, context, **kwargs):
         flowrules_status = kwargs.get('flowrules_status')
         LOG.info(_LI('update_flowrules_status: %s'), flowrules_status)
@@ -90,25 +75,3 @@ class SfcAgentRpcClient(object):
                 self.topic, sfc_topics.PORTFLOW, topics.DELETE),
             server=host)
         cctxt.cast(context, 'delete_flow_rules', flowrule_entries=flows)
-
-    def ask_agent_to_update_src_node_flow_rules(self, context, flows):
-        LOG.debug('Ask agent on the specific host to update src node flows ')
-        LOG.debug('flows: %s', flows)
-        host = flows.get('host')
-        cctxt = self.client.prepare(
-            topic=topics.get_topic_name(
-                self.topic, sfc_topics.PORTFLOW, topics.UPDATE),
-            server=host)
-        cctxt.cast(context, 'update_src_node_flow_rules',
-                   flowrule_entries=flows)
-
-    def ask_agent_to_delete_src_node_flow_rules(self, context, flows):
-        LOG.debug('Ask agent on the specific host to delete src node flows')
-        LOG.debug('flows: %s', flows)
-        host = flows.get('host')
-        cctxt = self.client.prepare(
-            topic=topics.get_topic_name(
-                self.topic, sfc_topics.PORTFLOW, topics.DELETE),
-            server=host)
-        cctxt.cast(context, 'delete_src_node_flow_rules',
-                   flowrule_entries=flows)

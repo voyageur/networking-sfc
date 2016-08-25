@@ -122,6 +122,7 @@ class OVSBridgeExt(ovs_bridge.OVSAgentBridge):
         full_args = [
             "ovs-ofctl", "-O openflow13", cmd, self.br_name
         ] + args
+        LOG.debug('execute ovs command %s %s', full_args, process_input)
         try:
             return utils.execute(full_args, run_as_root=True,
                                  process_input=process_input)
@@ -166,7 +167,7 @@ def _build_group_expr_str(group_dict, cmd):
 
     if cmd != 'del':
         if "group_id" not in group_dict:
-            msg = _("Must specify one groupId on groupo addition"
+            msg = _("Must specify one group Id on group addition"
                     " or modification")
             raise exceptions.InvalidInput(error_message=msg)
         groupId = "group_id=%s" % group_dict.pop('group_id')
