@@ -33,8 +33,17 @@ neutron port-list
 neutron subnet-list
 neutron router-list
 
+set +e
+sudo ls -l -a $BASE
+sudo ls -l -a $BASE/new
+sudo ps -ef
+sudo cat /etc/neutron/neutron.conf
+sudo cat /etc/neutron/plugins/ml2/ml2_conf.ini
+set -e
+
 echo "Running networking-sfc test suite"
 sudo -H -u $owner $sudo_env tox -eall-plugin -- $DEVSTACK_GATE_TEMPEST_REGEX
+sudo -H -u $owner $sudo_env tox -eall-plugin -- "^(?:networking_sfc\.tests\.tempest_plugin).*$"
 
 echo "Some post-process info"
 neutron net-list
