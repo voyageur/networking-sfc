@@ -408,7 +408,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
     def _ovn(self):
         if self._ovn_property is None:
             LOG.info(_LI("Getting OvsdbOvnIdl"))
-            self._ovn_property = impl_idl_ovn.OvsdbOvnIdl(self)
+            self._ovn_property = impl_idl_ovn.OvsdbNbOvnIdl(self)
         return self._ovn_property
 
     #
@@ -453,7 +453,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
     def _check_logical_port_exist(self, port_name):
         lport_uuid = None
         try:
-            lport = idlutils.row_by_value(self._ovn.idl, 'Logical_Port',
+            lport = idlutils.row_by_value(self._ovn.idl, 'Logical_Switch_Port',
                                           'name', port_name)
             lport_uuid = lport.uuid
         except idlutils.RowNotFound:
