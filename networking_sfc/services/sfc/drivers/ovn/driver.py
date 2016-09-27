@@ -79,7 +79,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
         ovn_dict = {
             'id': port_chain['id'],
             'name': port_chain['name'],
-            'tenant_id': port_chain['tenant_id'],
+            'project_id': port_chain['project_id'],
             'description': port_chain['description'],
             'port_pair_groups': port_chain['port_pair_groups']
         }
@@ -359,6 +359,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                 fc_detail.pop('description')
                 fc_detail.pop('l7_parameters')
                 fc_detail.pop('name')
+                fc_detail.pop('project_id')
                 fc_detail.pop('tenant_id')
                 txn.add(self._ovn.create_lflow_classifier(
                     lport_chain_name=lport_chain_name,
@@ -565,6 +566,7 @@ class OVNSfcDriver(driver_base.SfcDriverBase,
                 flow_classifier.pop('description')
                 flow_classifier.pop('l7_parameters')
                 flow_classifier.pop('name')
+                flow_classifier.pop('project_id')
                 flow_classifier.pop('tenant_id')
                 txn.add(self._ovn.create_lflow_classifier(
                     lport_chain_name=lport_chain_name,
