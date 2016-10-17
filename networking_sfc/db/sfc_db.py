@@ -216,6 +216,7 @@ class SfcDbPlugin(
             for pg_id in pg_ids:
                 self._get_port_pair_group(context, pg_id)
             query = self._model_query(context, PortChain)
+
             for port_chain_db in query.all():
                 if port_chain_db['id'] == pc_id:
                     continue
@@ -223,9 +224,9 @@ class SfcDbPlugin(
                     assoc['portpairgroup_id']
                     for assoc in port_chain_db.chain_group_associations
                 ]
-                if pc_pg_ids and pg_ids and pc_pg_ids == pg_ids:
-                    raise ext_sfc.InvalidPortPairGroups(
-                        port_pair_groups=pg_ids, port_chain=port_chain_db.id)
+                #JEDif pc_pg_ids and pg_ids and pc_pg_ids == pg_ids:
+                #    raise ext_sfc.InvalidPortPairGroups(
+                #        port_pair_groups=pg_ids, port_chain=port_chain_db.id)
 
     def _validate_flow_classifiers(self, context, fc_ids, pc_id=None):
         with context.session.begin(subtransactions=True):
@@ -250,16 +251,16 @@ class SfcDbPlugin(
                     self._get_flow_classifier(context, pc_fc_id)
                     for pc_fc_id in pc_fc_ids
                 ]
-                for pc_fc in pc_fcs:
-                    for fc in fcs:
-                        fc_cls = fc_db.FlowClassifierDbPlugin
-                        if fc_cls.flowclassifier_basic_conflict(
-                            pc_fc, fc
-                        ):
-                            raise ext_sfc.PortChainFlowClassifierInConflict(
-                                fc_id=fc['id'], pc_id=port_chain_db['id'],
-                                pc_fc_id=pc_fc['id']
-                            )
+                #for pc_fc in pc_fcs:
+                #    for fc in fcs:
+                #        fc_cls = fc_db.FlowClassifierDbPlugin
+                #        if fc_cls.flowclassifier_basic_conflict(
+                #            pc_fc, fc
+                #        ):
+                #            raise ext_sfc.PortChainFlowClassifierInConflict(
+                #                fc_id=fc['id'], pc_id=port_chain_db['id'],
+                #                pc_fc_id=pc_fc['id']
+                #           )
 
     def _setup_chain_group_associations(
         self, context, port_chain, pg_ids
@@ -446,12 +447,12 @@ class SfcDbPlugin(
             pp_in_use = query.filter_by(
                 ingress=pp['ingress'], egress=pp['egress']
             ).first()
-            if pp_in_use:
-                raise ext_sfc.PortPairIngressEgressInUse(
-                    ingress=pp['ingress'],
-                    egress=pp['egress'],
-                    id=pp_in_use['id']
-                )
+            #JEDif pp_in_use:
+            #    raise ext_sfc.PortPairIngressEgressInUse(
+            #        ingress=pp['ingress'],
+            #        egress=pp['egress'],
+            #        id=pp_in_use['id']
+            #    )
 
             service_function_parameters = {
                 key: ServiceFunctionParam(
@@ -556,9 +557,9 @@ class SfcDbPlugin(
         with context.session.begin(subtransactions=True):
             portpairs_list = [self._get_port_pair(context, pp_id)
                               for pp_id in pg['port_pairs']]
-            for portpair in portpairs_list:
-                if portpair.portpairgroup_id:
-                    raise ext_sfc.PortPairInUse(id=portpair.id)
+            #for portpair in portpairs_list:
+            #    if portpair.portpairgroup_id:
+            #        raise ext_sfc.PortPairInUse(id=portpair.id)
             port_pair_group_parameters = {
                 key: PortPairGroupParam(
                     keyword=key, value=jsonutils.dumps(val))

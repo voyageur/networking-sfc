@@ -60,9 +60,7 @@ def upgrade():
                                 ondelete='RESTRICT'),
         sa.ForeignKeyConstraint(['portpairgroup_id'], ['sfc_port_pair_groups.id'],
                                 ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('ingress', 'egress',
-                            name='uniq_sfc_port_pairs0ingress0egress')
+        sa.PrimaryKeyConstraint('id')
     )
 
     op.create_table(
